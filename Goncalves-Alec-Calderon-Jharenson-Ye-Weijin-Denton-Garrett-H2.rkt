@@ -373,6 +373,13 @@
 (check-expect (eval "cdr(cons(1, cons(3, mt-list())))") (cons-val (num-val 3) (mt-list-val)))
 (check-expect (eval "null?(mt-list())") (bool-val #t))
 (check-expect (eval "null?(cons(1, mt-list()))") (bool-val #f))
+(check-expect (eval "let sum = proc (x) proc (y) sub(x, sub(0, y))
+       in letrec sigma (n) = if zero?(n)
+                             then 0
+                             else ((sum n) (sigma sub(n, 1)))
+          in (sigma 5)") (num-val 15))
+(check-expect (eval "letrec fact(n) = if zero?(n) then 1 else mult(n, (fact sub(n, 1)))
+       in (fact 5)") (num-val 120))
 
 (test)
  
