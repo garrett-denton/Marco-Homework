@@ -21,15 +21,15 @@
     
     (expression (number) const-exp)
     
-    (expression("sub" "(" expression expression ")")diff-exp)
+    (expression("sub" "(" expression"," expression ")")diff-exp)
     
     (expression ("zero?" "(" expression ")") zero?-exp)
 
-    (expression ("equal?" "(" expression expression ")") equal?-exp)
+    (expression ("equal?" "(" expression"," expression ")") equal?-exp)
 
-    (expression ("greater?" "(" expression expression ")") greater?-exp)
+    (expression ("greater?" "(" expression"," expression ")") greater?-exp)
 
-    (expression ("less?" "(" expression expression ")") less?-exp)
+    (expression ("less?" "(" expression"," expression ")") less?-exp)
     
     (expression
      ("if" expression "then" expression "else" expression) if-exp)
@@ -38,11 +38,11 @@
 
     (expression ("minus" "(" expression ")") minus-exp)
 
-    (expression ("add" "(" expression expression ")") add-exp)
+    (expression ("add" "(" expression"," expression ")") add-exp)
 
-    (expression ("mult" "(" expression expression ")") mult-exp)
+    (expression ("mult" "(" expression"," expression ")") mult-exp)
 
-    (expression ("div" "(" expression expression ")") div-exp)
+    (expression ("div" "(" expression"," expression ")") div-exp)
     
     (expression 
      ("let" identifier "=" expression "in" expression) let-exp)
@@ -306,23 +306,29 @@
               (let ((proc (expval->proc (value-of rator env)))
                     (args (map (lambda (rand) (value-of rand env)) rands)))
                 (apply-procedure proc args)))
+    
     (mt-list-exp() (mt-list-val))
+    
     (list-exp (expressions)
               (cons-val (map
                          (lambda (expression) (value-of expression env))
                          expressions)))
+    
     (cons-exp (exp1 exp2)
               (let ((var1 (value-of exp1 env))
                     (var2 (value-of exp2 env)))
                 (cons-val var1 var2)))
+    
     (car-exp (exp1)
-           (expval->car (value-of exp1 env)))
+             (expval->car (value-of exp1 env)))
+    
     (cdr-exp (exp1)
              (expval->cdr (value-of exp1 env)))
+    
     (null?-exp (exp1)
                (let ((var1 (expval->null? (value-of exp1 env))))
-                 (bool-val var1)))               
-    
+                 (bool-val var1)))
+
     ))
 
 ;; apply-procedure : Proc * ExpVals -> ExpVal
@@ -344,24 +350,29 @@
 
 
 (check-expect (eval "if zero?(1) then 1 else 2") (num-val 2))
-(check-expect (eval "sub(x v)")(num-val 5))
-(check-expect (eval "if zero?(sub(x x)) then x else 2") (num-val 10))
-(check-expect (eval "if zero?(sub(x v)) then x else 2") (num-val 2))
-(check-expect (eval "let decr = proc (a) sub(a 1) in (decr 30)") (num-val 29))
-(check-expect (eval "( proc (g) (g 30) proc (y) sub(y 1))") (num-val 29))
+(check-expect (eval "sub(x, v)")(num-val 5))
+(check-expect (eval "if zero?(sub(x, x)) then x else 2") (num-val 10))
+(check-expect (eval "if zero?(sub(x, v)) then x else 2") (num-val 2))
+(check-expect (eval "let decr = proc (a) sub(a, 1) in (decr 30)") (num-val 29))
+(check-expect (eval "( proc (g) (g 30) proc (y) sub(y, 1))") (num-val 29))
 (check-expect (eval "let x = 200 
-         in let f = proc (z) sub(z x) 
+         in let f = proc (z) sub(z, x) 
               in let x = 100 
-                   in let g = proc (z) sub(z x) 
-                        in sub((f 1) (g 1))") (num-val -100))
-(check-expect (eval "let sum = proc (x) proc (y) sub(x sub(0 y)) in ((sum 3) 4)") (num-val 7))
+                   in let g = proc (z) sub(z, x) 
+                        in sub((f 1), (g 1))") (num-val -100))
+(check-expect (eval "let sum = proc (x) proc (y) sub(x, sub(0, y)) in ((sum 3) 4)") (num-val 7))
 (check-expect (eval "let x = 200 
-         in let f = proc (z) sub(z x) 
+         in let f = proc (z) sub(z, x) 
               in let x = 100 
-                   in let g = proc (z) sub(z x) 
-                        in sub((f 1) (g 1))") (num-val -100))
-(check-expect (eval "let f = proc (y, z) if zero? (z) then y else sub(sub(y -1) sub(z 1)) in (f 5 5)") (num-val 2))
-(check-expect (eval "let f = proc (y, z, w) if equal?(y z) then w else sub(add(y 1) sub(z 1)) in (f 5 5 3)") (num-val 3))
-(check-expect (eval "let f = proc (y, z, w) if equal?(y z) then w else sub(add(y 1) sub(z 1)) in (f 7 5 3)") (num-val 4))
+                   in let g = proc (z) sub(z, x) 
+                        in sub((f 1), (g 1))") (num-val -100))
+(check-expect (eval "let f = proc (y, z) if zero? (z) then y else sub(sub(y, -1), sub(z, 1)) in (f 5 5)") (num-val 2))
+(check-expect (eval "let f = proc (y, z, w) if equal?(y, z) then w else sub(add(y, 1), sub(z, 1)) in (f 5 5 3)") (num-val 3))
+(check-expect (eval "let f = proc (y, z, w) if equal?(y, z) then w else sub(add(y, 1), sub(z, 1)) in (f 7 5 3)") (num-val 4))
+(check-expect (eval "car(cons(3, mt-list()))") (num-val 3))
+(check-expect (eval "cdr(cons(1, cons(3, mt-list())))") (cons-val (num-val 3) (mt-list-val)))
+(check-expect (eval "null?(mt-list())") (bool-val #t))
+(check-expect (eval "null?(cons(1, mt-list()))") (bool-val #f))
 
 (test)
+ 
