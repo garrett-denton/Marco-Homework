@@ -48,7 +48,7 @@
      ("let" identifier "=" expression "in" expression) let-exp)
     
     (expression
-     ("letrec" identifier "(" identifier ")" "=" expression 
+     ("letrec" identifier "(" (arbno identifier) ")" "=" expression 
                "in" expression) letrec-exp)
     
     (expression ("proc" "(" (separated-list identifier ",") ")" expression) proc-exp)
@@ -92,7 +92,7 @@
    (saved-env environment?))
   (extend-env-rec
    (id symbol?)
-   (bvar symbol?)
+   (bvars (list-of symbol?))
    (body expression?)
    (saved-env environment?)))
 
@@ -104,9 +104,9 @@
                 (if (eqv? search-sym var)
                     val
                     (apply-env saved-env search-sym)))
-    (extend-env-rec (p-name b-var p-body saved-env)
+    (extend-env-rec (p-name b-vars p-body saved-env)
                     (if (eqv? search-sym p-name)
-                        (proc-val (procedure b-var p-body env))          
+                        (proc-val (procedure b-vars p-body env))          
                         (apply-env saved-env search-sym)))))
 
 ;Purpose: to extend the env with multiple bindings
@@ -293,9 +293,9 @@
                (value-of body
                          (extend-env var val1 env))))
     
-    (letrec-exp (p-name param p-body letrec-body)
+    (letrec-exp (p-name params p-body letrec-body)
                 (value-of letrec-body (extend-env-rec p-name
-                                                      param
+                                                      params
                                                       p-body
                                                       env)))
     
