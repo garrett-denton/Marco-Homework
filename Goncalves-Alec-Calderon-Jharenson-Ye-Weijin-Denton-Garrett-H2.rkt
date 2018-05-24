@@ -1,6 +1,5 @@
 #lang eopl
 
-;;last updated 8:40pm
 (require test-engine/racket-tests)
 ;;;;;;;;;;;;;;;; grammatical specification ;;;;;;;;;;;;;;;;
 
@@ -322,10 +321,7 @@
              (expval->cdr (value-of exp1 env)))
     (null?-exp (exp1)
                (let ((var1 (expval->null? (value-of exp1 env))))
-                 (bool-val var1)))
-              
-    
-                 
+                 (bool-val var1)))               
     
     ))
 
