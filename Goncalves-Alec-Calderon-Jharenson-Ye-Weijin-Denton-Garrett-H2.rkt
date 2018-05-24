@@ -124,7 +124,9 @@
   (bool-val
    (boolean boolean?))
   (proc-val 
-   (proc proc?)))
+   (proc proc?))
+  (list-val
+   (list list?)))
 
 ;;; extractors:
 
@@ -133,7 +135,7 @@
   (lambda (v)
     (cases expval v
       (num-val (num) num)
-      (else (expval-extractor-error 'num v)))))5222
+      (else (expval-extractor-error 'num v)))))
 
 ;; expval->bool : ExpVal -> Bool
 (define expval->bool
@@ -148,6 +150,14 @@
     (cases expval v
       (proc-val (proc) proc)
       (else (expval-extractor-error 'proc v)))))
+
+;; expval->list : ExpVal -> List
+(define expval->list
+  (lambda (v)
+    (cases expval v
+      (list-val (list) list)
+      (else (expval-extractor-error 'list v)))))
+
 
 (define expval-extractor-error
   (lambda (variant value)
@@ -165,6 +175,8 @@
    (body expression?)
    (env environment?)))
 
+;; list? : SchemeVal -> Bool
+;; list : 
 
 ;;;;;;;;;;;;;;;; the interpreter ;;;;;;;;;;;;;;;;
 
@@ -198,34 +210,34 @@
     (equal?-exp (exp1 exp2)
                 (let ((val1 (value-of exp1 env)))
                   (let ((val2 (value-of exp2 env)))
-                        (let ((num1 (expval->num val1)))
-                          (let ((num2 (expval->num val2)))
-                          (if (equal? num1 num2)
-                              (bool-val #t)
-                              (bool-val #f)))))))
+                    (let ((num1 (expval->num val1)))
+                      (let ((num2 (expval->num val2)))
+                        (if (equal? num1 num2)
+                            (bool-val #t)
+                            (bool-val #f)))))))
     (greater?-exp (exp1 exp2)
-                (let ((val1 (value-of exp1 env)))
-                  (let ((val2 (value-of exp2 env)))
-                        (let ((num1 (expval->num val1)))
-                          (let ((num2 (expval->num val2)))
+                  (let ((val1 (value-of exp1 env)))
+                    (let ((val2 (value-of exp2 env)))
+                      (let ((num1 (expval->num val1)))
+                        (let ((num2 (expval->num val2)))
                           (if (> num1 num2)
                               (bool-val #t)
                               (bool-val #f)))))))
     (less?-exp (exp1 exp2)
-                (let ((val1 (value-of exp1 env)))
-                  (let ((val2 (value-of exp2 env)))
-                        (let ((num1 (expval->num val1)))
-                          (let ((num2 (expval->num val2)))
-                          (if (< num1 num2)
-                              (bool-val #t)
-                              (bool-val #f)))))))
+               (let ((val1 (value-of exp1 env)))
+                 (let ((val2 (value-of exp2 env)))
+                   (let ((num1 (expval->num val1)))
+                     (let ((num2 (expval->num val2)))
+                       (if (< num1 num2)
+                           (bool-val #t)
+                           (bool-val #f)))))))
     
     (add-exp (exp1 exp2)
-              (let ((val1 (value-of exp1 env))
-                    (val2 (value-of exp2 env)))
-                (let ((num1 (expval->num val1))
-                      (num2 (expval->num val2)))
-                  (num-val (+ num1 num2)))))
+             (let ((val1 (value-of exp1 env))
+                   (val2 (value-of exp2 env)))
+               (let ((num1 (expval->num val1))
+                     (num2 (expval->num val2)))
+                 (num-val (+ num1 num2)))))
     (mult-exp (exp1 exp2)
               (let ((val1 (value-of exp1 env))
                     (val2 (value-of exp2 env)))
@@ -233,11 +245,11 @@
                       (num2 (expval->num val2)))
                   (num-val (* num1 num2)))))
     (div-exp (exp1 exp2)
-              (let ((val1 (value-of exp1 env))
-                    (val2 (value-of exp2 env)))
-                (let ((num1 (expval->num val1))
-                      (num2 (expval->num val2)))
-                  (num-val (quotient num1 num2)))))
+             (let ((val1 (value-of exp1 env))
+                   (val2 (value-of exp2 env)))
+               (let ((num1 (expval->num val1))
+                     (num2 (expval->num val2)))
+                 (num-val (quotient num1 num2)))))
 
     (minus-exp (exp1)
                (let((val1 (value-of exp1 env)))
@@ -309,5 +321,6 @@
 (check-expect (eval "let f = proc (y, z) if zero? (z) then y else -(-(y, -1), -(z, 1)) in (f 5 5)") (num-val 2))
 (check-expect (eval "let f = proc (y, z, w) if equal?(y z) then w else -(add(y 1), -(z, 1)) in (f 5 5 3)") (num-val 3))
 (check-expect (eval "let f = proc (y, z, w) if equal?(y z) then w else -(add(y 1), -(z, 1)) in (f 7 5 3)") (num-val 4))
+
 
 (test)
