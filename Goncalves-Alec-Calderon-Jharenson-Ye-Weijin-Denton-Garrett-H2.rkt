@@ -55,7 +55,19 @@
     (expression ("proc" "(" (separated-list identifier ",") ")" expression) proc-exp)
     
     (expression ("(" expression (arbno expression) ")") call-exp)
-    
+
+    (expression ("mt-list" "(" ")") mt-list-exp)
+
+    (expression ("list" "(" (separated-list expression ",") ")") list-exp)
+
+    (expression ("cons" "(" expression "," expression ")") cons-exp)
+
+    (expression ("car" "(" expression ")") car-exp)
+
+    (expression ("cdr" "(" expression ")") cdr-exp)
+
+    (expression ("null?" "(" expression ")") null?-exp)
+
     ))
 
 ;;;;;;;;;;;;;;;; sllgen boilerplate ;;;;;;;;;;;;;;;;
@@ -125,8 +137,10 @@
    (boolean boolean?))
   (proc-val 
    (proc proc?))
-  (list-val
-   (list list?)))
+  (mt-list-val )
+  (cons-val 
+   (car expval?)
+   (cdr expval?)))
 
 ;;; extractors:
 
@@ -151,12 +165,27 @@
       (proc-val (proc) proc)
       (else (expval-extractor-error 'proc v)))))
 
-;; expval->list : ExpVal -> List
-(define expval->list
+;; expval->car : ExpVal -> ExpVal
+(define expval->car
   (lambda (v)
     (cases expval v
-      (list-val (list) list)
-      (else (expval-extractor-error 'list v)))))
+      (cons-val (car cdr) car)
+      (else (expval-extractor-error 'car v)))))
+
+;;expval->cdr : ExpVal -> ExpVal
+(define expval->cdr
+  (lambda (v)
+    (cases expval v
+      (cons-val (car cdr) cdr)
+      (else (expval-extractor-error 'cdr v)))))
+
+;;expval->null?: ExpVal-> boolean
+(define expval->null?
+  (lambda (v)
+    (cases expval v
+      (mt-list-val() #t)
+      (cons-val (car cdr) #f)
+      (else (expval-extractor-error 'mt-list-or-cons v)))))
 
 
 (define expval-extractor-error
@@ -175,8 +204,6 @@
    (body expression?)
    (env environment?)))
 
-;; list? : SchemeVal -> Bool
-;; list : 
 
 ;;;;;;;;;;;;;;;; the interpreter ;;;;;;;;;;;;;;;;
 
@@ -280,6 +307,25 @@
               (let ((proc (expval->proc (value-of rator env)))
                     (args (map (lambda (rand) (value-of rand env)) rands)))
                 (apply-procedure proc args)))
+    (mt-list-exp() (mt-list-val))
+    (list-exp (expressions)
+              (cons-val (map
+                         (lambda (expression) (value-of expression env))
+                         expressions)))
+    (cons-exp (exp1 exp2)
+              (let ((var1 (value-of exp1 env))
+                    (var2 (value-of exp2 env)))
+                (cons-val var1 var2)))
+    (car-exp (exp1)
+           (expval->car (value-of exp1 env)))
+    (cdr-exp (exp1)
+             (expval->cdr (value-of exp1 env)))
+    (null?-exp (exp1)
+               (let ((var1 (expval->null? (value-of exp1 env))))
+                 (bool-val var1)))
+              
+    
+                 
     
     ))
 
