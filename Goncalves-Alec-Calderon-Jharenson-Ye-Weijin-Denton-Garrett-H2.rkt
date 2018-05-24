@@ -21,7 +21,7 @@
     
     (expression (number) const-exp)
     
-    (expression("-" "(" expression "," expression ")")diff-exp)
+    (expression("sub" "(" expression expression ")")diff-exp)
     
     (expression ("zero?" "(" expression ")") zero?-exp)
 
@@ -344,25 +344,24 @@
 
 
 (check-expect (eval "if zero?(1) then 1 else 2") (num-val 2))
-(check-expect (eval "-(x, v)")(num-val 5))
-(check-expect (eval "if zero?(-(x, x)) then x else 2") (num-val 10))
-(check-expect (eval "if zero?(-(x, v)) then x else 2") (num-val 2))
-(check-expect (eval "let decr = proc (a) -(a, 1) in (decr 30)") (num-val 29))
-(check-expect (eval "( proc (g) (g 30) proc (y) -(y, 1))") (num-val 29))
+(check-expect (eval "sub(x v)")(num-val 5))
+(check-expect (eval "if zero?(sub(x x)) then x else 2") (num-val 10))
+(check-expect (eval "if zero?(sub(x v)) then x else 2") (num-val 2))
+(check-expect (eval "let decr = proc (a) sub(a 1) in (decr 30)") (num-val 29))
+(check-expect (eval "( proc (g) (g 30) proc (y) sub(y 1))") (num-val 29))
 (check-expect (eval "let x = 200 
-         in let f = proc (z) -(z, x) 
+         in let f = proc (z) sub(z x) 
               in let x = 100 
-                   in let g = proc (z) -(z, x) 
-                        in -((f 1), (g 1))") (num-val -100))
-(check-expect (eval "let sum = proc (x) proc (y) -(x, -(0, y)) in ((sum 3) 4)") (num-val 7))
+                   in let g = proc (z) sub(z x) 
+                        in sub((f 1) (g 1))") (num-val -100))
+(check-expect (eval "let sum = proc (x) proc (y) sub(x sub(0 y)) in ((sum 3) 4)") (num-val 7))
 (check-expect (eval "let x = 200 
-         in let f = proc (z) -(z, x) 
+         in let f = proc (z) sub(z x) 
               in let x = 100 
-                   in let g = proc (z) -(z, x) 
-                        in -((f 1), (g 1))") (num-val -100))
-(check-expect (eval "let f = proc (y, z) if zero? (z) then y else -(-(y, -1), -(z, 1)) in (f 5 5)") (num-val 2))
-(check-expect (eval "let f = proc (y, z, w) if equal?(y z) then w else -(add(y 1), -(z, 1)) in (f 5 5 3)") (num-val 3))
-(check-expect (eval "let f = proc (y, z, w) if equal?(y z) then w else -(add(y 1), -(z, 1)) in (f 7 5 3)") (num-val 4))
-
+                   in let g = proc (z) sub(z x) 
+                        in sub((f 1) (g 1))") (num-val -100))
+(check-expect (eval "let f = proc (y, z) if zero? (z) then y else sub(sub(y -1) sub(z 1)) in (f 5 5)") (num-val 2))
+(check-expect (eval "let f = proc (y, z, w) if equal?(y z) then w else sub(add(y 1) sub(z 1)) in (f 5 5 3)") (num-val 3))
+(check-expect (eval "let f = proc (y, z, w) if equal?(y z) then w else sub(add(y 1) sub(z 1)) in (f 7 5 3)") (num-val 4))
 
 (test)
