@@ -1,384 +1,1950 @@
-#lang eopl
+#reader(lib"read.ss""wxme")WXME0108 ## 
+#|
+   This file uses the GRacket editor format.
+   Open this file in DrRacket version 6.2 or later to read it.
 
-(require test-engine/racket-tests)
-;;;;;;;;;;;;;;;; grammatical specification ;;;;;;;;;;;;;;;;
+   Most likely, it was created by saving a program in DrRacket,
+   and it probably contains a program with non-text elements
+   (such as images or comment boxes).
 
-(define the-lexical-spec
-  '((whitespace (whitespace) skip)
-    
-    (comment ("%" (arbno (not #\newline))) skip)
-    
-    (identifier
-     (letter (arbno (or letter digit "_" "-" "?"))) symbol)
-    
-    (number (digit (arbno digit)) number)
-    
-    (number ("-" digit (arbno digit)) number)
-    ))
-
-(define the-grammar
-  '((program (expression) a-program)
-    
-    (expression (number) const-exp)
-    
-    (expression("sub" "(" expression"," expression ")")diff-exp)
-    
-    (expression ("zero?" "(" expression ")") zero?-exp)
-
-    (expression ("equal?" "(" expression"," expression ")") equal?-exp)
-
-    (expression ("greater?" "(" expression"," expression ")") greater?-exp)
-
-    (expression ("less?" "(" expression"," expression ")") less?-exp)
-    
-    (expression
-     ("if" expression "then" expression "else" expression) if-exp)
-    
-    (expression (identifier) var-exp)
-
-    (expression ("minus" "(" expression ")") minus-exp)
-
-    (expression ("add" "(" expression"," expression ")") add-exp)
-
-    (expression ("mult" "(" expression"," expression ")") mult-exp)
-
-    (expression ("div" "(" expression"," expression ")") div-exp)
-    
-    (expression 
-     ("let" identifier "=" expression "in" expression) let-exp)
-    
-    (expression
-     ("letrec" identifier "(" (arbno identifier) ")" "=" expression 
-               "in" expression) letrec-exp)
-    
-    (expression ("proc" "(" (separated-list identifier ",") ")" expression) proc-exp)
-    
-    (expression ("(" expression (arbno expression) ")") call-exp)
-
-    (expression ("mt-list" "(" ")") mt-list-exp)
-
-    (expression ("list" "(" (separated-list expression ",") ")") list-exp)
-
-    (expression ("cons" "(" expression "," expression ")") cons-exp)
-
-    (expression ("car" "(" expression ")") car-exp)
-
-    (expression ("cdr" "(" expression ")") cdr-exp)
-
-    (expression ("null?" "(" expression ")") null?-exp)
-
-    ))
-
-;;;;;;;;;;;;;;;; sllgen boilerplate ;;;;;;;;;;;;;;;;
-
-(sllgen:make-define-datatypes the-lexical-spec the-grammar)
-
-(define show-the-datatypes
-  (lambda () (sllgen:list-define-datatypes the-lexical-spec the-grammar)))
-
-(define scan&parse
-  (sllgen:make-string-parser the-lexical-spec the-grammar))
-
-(define just-scan
-  (sllgen:make-string-scanner the-lexical-spec the-grammar))
-
-;;;;;    ENVIRONMENT
-
-(define-datatype environment environment?
-  (empty-env)
-  (extend-env 
-   (bvar symbol?)
-   (bvec vector?)
-   (saved-env environment?)))
-
-(define (apply-env env search-sym)
-  (cases environment env
-    (empty-env ()
-               (eopl:error 'apply-env "No binding for ~s" search-sym))
-    (extend-env (var vec saved-env)
-                (if (eqv? search-sym var)
-                    (vector-ref vec 0)
-                    (apply-env saved-env search-sym)))))
-
-;Purpose: to extend env recursively using extend-env
-;extend-env-rec : symbol symbol expression env -> env
-(define extend-env-rec
-      (lambda (p-name b-var body saved-env)
-        (let ((vec (make-vector 1)))
-          (let ((new-env (extend-env p-name vec saved-env)))
-            (vector-set! vec 0
-                         (proc-val (procedure b-var body new-env)))
-            new-env))))
-
-  ;Purpose: to extend the env with multiple bindings
-  ;extend-env* : symbols exp-vals env -> env
-  ;Assumtion: length of vars and vals is equal
-  (define (extend-env* vars vals env)
-    (cond [(null? vars) env]
-          [else (extend-env (car vars) (vector (car vals)) (extend-env* (cdr vars) (cdr vals) env))]))
-
-  (define (init-env)
-    (extend-env
-     'i (vector (num-val 1))
-     (extend-env
-      'v (vector (num-val 5))
-      (extend-env
-       'x (vector (num-val 10))
-       (empty-env)))))
-
-  ;;;;;;;;;;;;;;;; expressed values ;;;;;;;;;;;;;;;;
-
-  ;;; an expressed value is either a number, a boolean or a procval.
-
-  (define-datatype expval expval?
-    (num-val
-     (value number?))
-    (bool-val
-     (boolean boolean?))
-    (proc-val 
-     (proc proc?))
-    (mt-list-val )
-    (cons-val 
-     (car expval?)
-     (cdr expval?)))
-
-  ;;; extractors:
-
-  ;; expval->num : ExpVal -> Int
-  (define expval->num
-    (lambda (v)
-      (cases expval v
-        (num-val (num) num)
-        (else (expval-extractor-error 'num v)))))
-
-  ;; expval->bool : ExpVal -> Bool
-  (define expval->bool
-    (lambda (v)
-      (cases expval v
-        (bool-val (bool) bool)
-        (else (expval-extractor-error 'bool v)))))
-
-  ;; expval->proc : ExpVal -> Proc
-  (define expval->proc
-    (lambda (v)
-      (cases expval v
-        (proc-val (proc) proc)
-        (else (expval-extractor-error 'proc v)))))
-
-  ;; expval->car : ExpVal -> ExpVal
-  (define expval->car
-    (lambda (v)
-      (cases expval v
-        (cons-val (car cdr) car)
-        (else (expval-extractor-error 'car v)))))
-
-  ;;expval->cdr : ExpVal -> ExpVal
-  (define expval->cdr
-    (lambda (v)
-      (cases expval v
-        (cons-val (car cdr) cdr)
-        (else (expval-extractor-error 'cdr v)))))
-
-  ;;expval->null?: ExpVal-> boolean
-  (define expval->null?
-    (lambda (v)
-      (cases expval v
-        (mt-list-val() #t)
-        (cons-val (car cdr) #f)
-        (else (expval-extractor-error 'mt-list-or-cons v)))))
-
-
-  (define expval-extractor-error
-    (lambda (variant value)
-      (eopl:error 'expval-extractors "Looking for a ~s, found ~s"
-                  variant value)))
-
-
-  ;;;;;;;;;;;;;;;; procedures ;;;;;;;;;;;;;;;;
-
-  ;; proc? : SchemeVal -> Bool
-  ;; procedure : Vars * Exp * Env -> Proc
-  (define-datatype proc proc?
-    (procedure
-     (vars (list-of symbol?))
-     (body expression?)
-     (env environment?)))
-
-
-  ;;;;;;;;;;;;;;;; the interpreter ;;;;;;;;;;;;;;;;
-
-  ;; value-of-program : Program -> ExpVal
-  (define (value-of-program pgm)
-    (cases program pgm
-      (a-program (exp1)
-                 (value-of exp1 (init-env)))))
-
-  ;; value-of : Exp * Env -> ExpVal
-  (define (value-of exp env)
-    (cases expression exp
-    
-      (const-exp (num) (num-val num))
-    
-      (var-exp (var) (apply-env env var))
-    
-      (diff-exp (exp1 exp2)
-                (let ((val1 (value-of exp1 env))
-                      (val2 (value-of exp2 env)))
-                  (let ((num1 (expval->num val1))
-                        (num2 (expval->num val2)))
-                    (num-val (- num1 num2)))))
-    
-      (zero?-exp (exp1)
-                 (let ((val1 (value-of exp1 env)))
-                   (let ((num1 (expval->num val1)))
-                     (if (zero? num1)
-                         (bool-val #t)
-                         (bool-val #f)))))
-      (equal?-exp (exp1 exp2)
-                  (let ((val1 (value-of exp1 env)))
-                    (let ((val2 (value-of exp2 env)))
-                      (let ((num1 (expval->num val1)))
-                        (let ((num2 (expval->num val2)))
-                          (if (equal? num1 num2)
-                              (bool-val #t)
-                              (bool-val #f)))))))
-      (greater?-exp (exp1 exp2)
-                    (let ((val1 (value-of exp1 env)))
-                      (let ((val2 (value-of exp2 env)))
-                        (let ((num1 (expval->num val1)))
-                          (let ((num2 (expval->num val2)))
-                            (if (> num1 num2)
-                                (bool-val #t)
-                                (bool-val #f)))))))
-      (less?-exp (exp1 exp2)
-                 (let ((val1 (value-of exp1 env)))
-                   (let ((val2 (value-of exp2 env)))
-                     (let ((num1 (expval->num val1)))
-                       (let ((num2 (expval->num val2)))
-                         (if (< num1 num2)
-                             (bool-val #t)
-                             (bool-val #f)))))))
-    
-      (add-exp (exp1 exp2)
-               (let ((val1 (value-of exp1 env))
-                     (val2 (value-of exp2 env)))
-                 (let ((num1 (expval->num val1))
-                       (num2 (expval->num val2)))
-                   (num-val (+ num1 num2)))))
-      (mult-exp (exp1 exp2)
-                (let ((val1 (value-of exp1 env))
-                      (val2 (value-of exp2 env)))
-                  (let ((num1 (expval->num val1))
-                        (num2 (expval->num val2)))
-                    (num-val (* num1 num2)))))
-      (div-exp (exp1 exp2)
-               (let ((val1 (value-of exp1 env))
-                     (val2 (value-of exp2 env)))
-                 (let ((num1 (expval->num val1))
-                       (num2 (expval->num val2)))
-                   (num-val (quotient num1 num2)))))
-
-      (minus-exp (exp1)
-                 (let((val1 (value-of exp1 env)))
-                   (let((num1 (expval->num val1)))
-                     (num-val (- 0 num1)))))
-    
-      (if-exp (exp1 exp2 exp3)
-              (let ((val1 (value-of exp1 env)))
-                (if (expval->bool val1)
-                    (value-of exp2 env)
-                    (value-of exp3 env))))
-    
-      (let-exp (var exp1 body)       
-               (let ((val1 (value-of exp1 env)))
-                 (value-of body
-                           (extend-env var (vector val1) env))))
-    
-      (letrec-exp (p-name params p-body letrec-body)
-                  (value-of letrec-body (extend-env-rec p-name
-                                                        params
-                                                        p-body
-                                                        env)))
-    
-      (proc-exp (vars body)
-                (proc-val (procedure vars body env)))
-    
-      (call-exp (rator rands)
-                (let ((proc (expval->proc (value-of rator env)))
-                      (args (map (lambda (rand) (value-of rand env)) rands)))
-                  (apply-procedure proc args)))
-    
-      (mt-list-exp() (mt-list-val))
-    
-      (list-exp (expressions)
-                (cons-val (map
-                           (lambda (expression) (value-of expression env))
-                           expressions)))
-    
-      (cons-exp (exp1 exp2)
-                (let ((var1 (value-of exp1 env))
-                      (var2 (value-of exp2 env)))
-                  (cons-val var1 var2)))
-    
-      (car-exp (exp1)
-               (expval->car (value-of exp1 env)))
-    
-      (cdr-exp (exp1)
-               (expval->cdr (value-of exp1 env)))
-    
-      (null?-exp (exp1)
-                 (let ((var1 (expval->null? (value-of exp1 env))))
-                   (bool-val var1)))
-
-      ))
-
-  ;; apply-procedure : Proc * ExpVals -> ExpVal
-  (define (apply-procedure proc1 vals)
-    (cases proc proc1
-      (procedure (vars body saved-env)
-                 (value-of body (extend-env* vars vals saved-env)))))
-
-  ;;;;;;   EVALUATION WRAPPERS
-
-  ;; parse: String -> a-program
-  (define (parse p) (scan&parse p))
-
-  ;; eval : String -> ExpVal
-  (define (eval string)
-    (value-of-program (parse string)))
-
-  ;;;;; EXAMPLES OF EVALUATION
-
-  (check-expect (eval "if zero?(1) then 1 else 2") (num-val 2))
-  (check-expect (eval "sub(x, v)")(num-val 5))
-  (check-expect (eval "if zero?(sub(x, x)) then x else 2") (num-val 10))
-  (check-expect (eval "if zero?(sub(x, v)) then x else 2") (num-val 2))
-  (check-expect (eval "let decr = proc (a) sub(a, 1) in (decr 30)") (num-val 29))
-  (check-expect (eval "( proc (g) (g 30) proc (y) sub(y, 1))") (num-val 29))
-  (check-expect (eval "let x = 200 
-         in let f = proc (z) sub(z, x) 
-              in let x = 100 
-                   in let g = proc (z) sub(z, x) 
-                        in sub((f 1), (g 1))") (num-val -100))
-  (check-expect (eval "let sum = proc (x) proc (y) sub(x, sub(0, y)) in ((sum 3) 4)") (num-val 7))
-  (check-expect (eval "let x = 200 
-         in let f = proc (z) sub(z, x) 
-              in let x = 100 
-                   in let g = proc (z) sub(z, x) 
-                        in sub((f 1), (g 1))") (num-val -100))
-  (check-expect (eval "let f = proc (y, z) if zero? (z) then y else sub(sub(y, -1), sub(z, 1)) in (f 5 5)") (num-val 2))
-  (check-expect (eval "let f = proc (y, z, w) if equal?(y, z) then w else sub(add(y, 1), sub(z, 1)) in (f 5 5 3)") (num-val 3))
-  (check-expect (eval "let f = proc (y, z, w) if equal?(y, z) then w else sub(add(y, 1), sub(z, 1)) in (f 7 5 3)") (num-val 4))
-  (check-expect (eval "car(cons(3, mt-list()))") (num-val 3))
-  (check-expect (eval "cdr(cons(1, cons(3, mt-list())))") (cons-val (num-val 3) (mt-list-val)))
-  (check-expect (eval "null?(mt-list())") (bool-val #t))
-  (check-expect (eval "null?(cons(1, mt-list()))") (bool-val #f))
-  (check-expect (eval "let sum = proc (x) proc (y) sub(x, sub(0, y))
-       in letrec sigma (n) = if zero?(n)
-                             then 0
-                             else ((sum n) (sigma sub(n, 1)))
-          in (sigma 5)") (num-val 15))
-  (check-expect (eval "letrec fact(n) = if zero?(n) then 1 else mult(n, (fact sub(n, 1)))
-       in (fact 5)") (num-val 120))
-
-  (test)
+            http://racket-lang.org/
+|#
+ 32 7 #"wxtext\0"
+3 1 6 #"wxtab\0"
+1 1 8 #"wximage\0"
+2 0 8 #"wxmedia\0"
+4 1 34 #"(lib \"syntax-browser.ss\" \"mrlib\")\0"
+1 0 16 #"drscheme:number\0"
+3 0 44 #"(lib \"number-snip.ss\" \"drscheme\" \"private\")\0"
+1 0 36 #"(lib \"comment-snip.ss\" \"framework\")\0"
+1 0 93
+(
+ #"((lib \"collapsed-snipclass.ss\" \"framework\") (lib \"collapsed-sni"
+ #"pclass-wxme.ss\" \"framework\"))\0"
+) 0 0 43 #"(lib \"collapsed-snipclass.ss\" \"framework\")\0"
+0 0 19 #"drscheme:sexp-snip\0"
+0 0 36 #"(lib \"cache-image-snip.ss\" \"mrlib\")\0"
+1 0 68
+(
+ #"((lib \"image-core.ss\" \"mrlib\") (lib \"image-core-wxme.rkt\" \"mr"
+ #"lib\"))\0"
+) 1 0 29 #"drscheme:bindings-snipclass%\0"
+1 0 101
+(
+ #"((lib \"ellipsis-snip.rkt\" \"drracket\" \"private\") (lib \"ellipsi"
+ #"s-snip-wxme.rkt\" \"drracket\" \"private\"))\0"
+) 2 0 88
+(
+ #"((lib \"pict-snip.rkt\" \"drracket\" \"private\") (lib \"pict-snip.r"
+ #"kt\" \"drracket\" \"private\"))\0"
+) 0 0 34 #"(lib \"bullet-snip.rkt\" \"browser\")\0"
+0 0 25 #"(lib \"matrix.ss\" \"htdp\")\0"
+1 0 22 #"drscheme:lambda-snip%\0"
+1 0 29 #"drclickable-string-snipclass\0"
+0 0 26 #"drracket:spacer-snipclass\0"
+0 0 57
+#"(lib \"hrule-snip.rkt\" \"macro-debugger\" \"syntax-browser\")\0"
+1 0 26 #"drscheme:pict-value-snip%\0"
+0 0 45 #"(lib \"image-snipr.ss\" \"slideshow\" \"private\")\0"
+1 0 38 #"(lib \"pict-snipclass.ss\" \"slideshow\")\0"
+2 0 55 #"(lib \"vertical-separator-snip.ss\" \"stepper\" \"private\")\0"
+1 0 18 #"drscheme:xml-snip\0"
+1 0 31 #"(lib \"xml-snipclass.ss\" \"xml\")\0"
+1 0 21 #"drscheme:scheme-snip\0"
+2 0 34 #"(lib \"scheme-snipclass.ss\" \"xml\")\0"
+1 0 10 #"text-box%\0"
+1 0 32 #"(lib \"text-snipclass.ss\" \"xml\")\0"
+1 0 1 6 #"wxloc\0"
+          0 0 138 0 1 #"\0"
+0 75 1 #"\0"
+0 10 90 -1 90 -1 3 -1 0 1 0 1 0 0 0 0 0 0 0 0 0 0 0 255 255 255 1 -1 0 9
+#"Standard\0"
+0 75 12 #"Courier New\0"
+0 14 90 -1 90 -1 3 -1 0 1 0 1 0 0 0 0 0 0 0 0 0 0 0 255 255 255 1 -1 2 1
+#"\0"
+0 -1 1 #"\0"
+1 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 1 1 1 1 1 1 0 0 0 0 0 0 -1 -1 2 24
+#"framework:default-color\0"
+0 -1 1 #"\0"
+1 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 255 255 255 -1 -1 2
+1 #"\0"
+0 -1 1 #"\0"
+1 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0 0 0 1 1 1 150 0 150 0 0 0 -1 -1 2 15
+#"text:ports out\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 150 0 150 0 0 0 -1 -1 2 1
+#"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 93 -1 -1 -1 0 0 0 0 0 0 0 0 0 1.0 1.0 1.0 255 0 0 0 0 0 -1
+-1 2 15 #"text:ports err\0"
+0 -1 1 #"\0"
+1 0 -1 92 93 -1 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 255 0 0 0 0 0 -1 -1 2 1
+#"\0"
+0 -1 1 #"\0"
+1 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0 0 0 1 1 1 0 0 175 0 0 0 -1 -1 2 17
+#"text:ports value\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 0 0 175 0 0 0 -1 -1 2 1
+#"\0"
+0 -1 1 #"\0"
+1.0 0 92 -1 -1 -1 -1 -1 0 0 0 0 0 0 0 0 0 1.0 1.0 1.0 34 139 34 0 0 0 -1
+-1 2 27 #"Matching Parenthesis Style\0"
+0 -1 1 #"\0"
+1.0 0 92 -1 -1 -1 -1 -1 0 0 0 0 0 0 0 0 0 1.0 1.0 1.0 34 139 34 0 0 0 -1
+-1 2 1 #"\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 38 38 128 0 0 0 -1 -1 2 37
+#"framework:syntax-color:scheme:symbol\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 38 38 128 0 0 0 -1 -1 2 38
+#"framework:syntax-color:scheme:keyword\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 38 38 128 0 0 0 -1 -1 2 1
+#"\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 194 116 31 0 0 0 -1 -1 2
+38 #"framework:syntax-color:scheme:comment\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 194 116 31 0 0 0 -1 -1 2 1
+#"\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 41 128 38 0 0 0 -1 -1 2 37
+#"framework:syntax-color:scheme:string\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 41 128 38 0 0 0 -1 -1 2 35
+#"framework:syntax-color:scheme:text\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 41 128 38 0 0 0 -1 -1 2 39
+#"framework:syntax-color:scheme:constant\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 41 128 38 0 0 0 -1 -1 2 1
+#"\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 132 60 36 0 0 0 -1 -1 2 49
+#"framework:syntax-color:scheme:hash-colon-keyword\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 132 60 36 0 0 0 -1 -1 2 42
+#"framework:syntax-color:scheme:parenthesis\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 132 60 36 0 0 0 -1 -1 2 1
+#"\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 255 0 0 0 0 0 -1 -1 2 36
+#"framework:syntax-color:scheme:error\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 255 0 0 0 0 0 -1 -1 2 1
+#"\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 0 0 0 0 0 0 -1 -1 2 36
+#"framework:syntax-color:scheme:other\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 0 0 0 0 0 0 -1 -1 2 16
+#"Misspelled Text\0"
+0 -1 1 #"\0"
+1 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0 0 0 1 1 1 0 0 0 0 0 0 -1 -1 2 1
+#"\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 81 112 203 0 0 0 -1 -1 2
+38 #"drracket:check-syntax:lexically-bound\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 81 112 203 0 0 0 -1 -1 2 1
+#"\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 178 34 34 0 0 0 -1 -1 2 28
+#"drracket:check-syntax:set!d\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 178 34 34 0 0 0 -1 -1 2 37
+#"drracket:check-syntax:unused-require\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 255 0 0 0 0 0 -1 -1 2 36
+#"drracket:check-syntax:free-variable\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 255 0 0 0 0 0 -1 -1 2 1
+#"\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 68 0 203 0 0 0 -1 -1 2 31
+#"drracket:check-syntax:imported\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 68 0 203 0 0 0 -1 -1 2 47
+#"drracket:check-syntax:my-obligation-style-pref\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 178 34 34 0 0 0 -1 -1 2 1
+#"\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 0 116 0 0 0 0 -1 -1 2 50
+#"drracket:check-syntax:their-obligation-style-pref\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 0 116 0 0 0 0 -1 -1 2 48
+#"drracket:check-syntax:unk-obligation-style-pref\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 0 0 0 0 0 0 -1 -1 2 1
+#"\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 139 142 28 0 0 0 -1 -1 2
+49 #"drracket:check-syntax:both-obligation-style-pref\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 139 142 28 0 0 0 -1 -1 2
+26 #"plt:htdp:test-coverage-on\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 0 0 0 0 0 0 -1 -1 2 1
+#"\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 1 0 0 0 0 0 0 255 165 0 0 0 0 -1 -1 2 27
+#"plt:htdp:test-coverage-off\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 1 0 0 0 0 0 0 255 165 0 0 0 0 -1 -1 4 1
+#"\0"
+0 70 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 1.0 1.0 1.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 4 4 #"XML\0"
+0 70 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 1.0 1.0 1.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 2 37 #"plt:module-language:test-coverage-on\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 0 0 0 0 1 1 1 0 0 0 0 0 0 -1 -1 2 38
+#"plt:module-language:test-coverage-off\0"
+0 -1 1 #"\0"
+1 0 -1 92 -1 93 -1 -1 0 1 0 0 0 1 0 0 0 0 0 0 255 165 0 0 0 0 -1 -1 0 1
+#"\0"
+0 75 12 #"Courier New\0"
+0.0 14 90 -1 90 -1 3 -1 0 1 0 1 0 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 1 -1 2 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 2 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 38 38 128 0
+0 0 -1 -1 2 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 194 116 31 0
+0 0 -1 -1 2 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 41 128 38 0
+0 0 -1 -1 2 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 132 60 36 0
+0 0 -1 -1 2 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 255 0 0 0 0
+0 -1 -1 2 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 81 112 203 0
+0 0 -1 -1 2 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 178 34 34 0
+0 0 -1 -1 2 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 68 0 203 0 0
+0 -1 -1 2 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 0 116 0 0 0
+0 -1 -1 2 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 139 142 28 0
+0 0 -1 -1 2 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 1 0.0 0.0 0.0 0.0 0.0 0.0 255 165 0 0
+0 0 -1 -1 2 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 34 139 34 0
+0 0 -1 -1 2 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 176 48 96 0
+0 0 -1 -1 4 1 #"\0"
+0 71 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 1.0 1.0 1.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 4 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 1 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 0 0 255 0 0
+0 -1 -1 4 1 #"\0"
+0 71 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 1 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 0 0 255 0 0
+0 -1 -1 4 1 #"\0"
+0 71 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 0 100 0 0 0
+0 -1 -1 2 1 #"\0"
+0 71 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 1.0 1.0 1.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 2 1 #"\0"
+0 71 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 0 100 0 0 0
+0 -1 -1 0 1 #"\0"
+0 75 12 #"Courier New\0"
+0.0 10 90 -1 90 -1 3 -1 0 1 0 1 0 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 1 -1 17 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 1 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 -1 -1 4 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 1 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 -1 -1 24 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 1 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 -1 -1 15 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 1 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 -1 -1 44 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 1 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 -1 -1 46 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 1 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 -1 -1 14 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 1 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 -1 -1 0 1 #"\0"
+0 75 12 #"Courier New\0"
+0.0 17 90 -1 90 -1 3 -1 0 1 0 1 0 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 1 -1 2 38 #"drscheme:check-syntax:lexically-bound\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 81 112 203 0
+0 0 -1 -1 2 28 #"drscheme:check-syntax:set!d\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 178 34 34 0
+0 0 -1 -1 2 31 #"drscheme:check-syntax:imported\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 68 0 203 0 0
+0 -1 -1 8 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 255 0 0 0 0
+0 -1 -1 8 24 #"drscheme:text:ports err\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 255 0 0 0 0
+0 -1 -1 2 41 #"profj:syntax-colors:scheme:block-comment\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 194 116 31 0
+0 0 -1 -1 2 35 #"profj:syntax-colors:scheme:keyword\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 2 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 139 0 139 0
+0 0 -1 -1 2 37 #"profj:syntax-colors:scheme:prim-type\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 139 0 139 0
+0 0 -1 -1 2 38 #"profj:syntax-colors:scheme:identifier\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 38 38 128 0
+0 0 -1 -1 2 34 #"profj:syntax-colors:scheme:string\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 34 139 34 0
+0 0 -1 -1 2 35 #"profj:syntax-colors:scheme:literal\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 34 139 34 0
+0 0 -1 -1 2 35 #"profj:syntax-colors:scheme:comment\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 194 116 31 0
+0 0 -1 -1 2 33 #"profj:syntax-colors:scheme:error\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 255 0 0 0 0
+0 -1 -1 2 35 #"profj:syntax-colors:scheme:default\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 2 37 #"profj:syntax-colors:scheme:uncovered\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 2 35 #"profj:syntax-colors:scheme:covered\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 139 0 139 0
+0 0 -1 -1 0 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 200 0 0 0 0
+0 -1 -1 4 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 92 -1 -1 -1 -1 -1 0 0 0 0 0 1 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 0 -1 -1 0 1 #"\0"
+0 -1 1 #"\0"
+0.0 12 -1 -1 -1 -1 -1 -1 0 0 1 0 0 0 1.0 1.0 1.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 2 1 #"\0"
+0 -1 1 #"\0"
+0.0 12 -1 -1 -1 -1 -1 -1 0 0 1 0 0 0 1.0 1.0 1.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 0 1 #"\0"
+0 75 12 #"Courier New\0"
+0.0 13 90 -1 90 -1 3 -1 0 1 0 1 0 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 1 -1 24 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 15 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 4 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 14 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 21 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 19 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 24 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 178 34 34 0
+0 0 -1 -1 14 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 178 34 34 0
+0 0 -1 -1 4 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 178 34 34 0
+0 0 -1 -1 21 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 178 34 34 0
+0 0 -1 -1 19 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 178 34 34 0
+0 0 -1 -1 4 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 -1 -1 24 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 -1 -1 15 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 -1 -1 14 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 -1 -1 17 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 -1 -1 21 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 -1 -1 19 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 -1 -1 4 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 0.0 0.0 0.0 178 34 34
+255 255 255 -1 -1 24 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 1 0 0.0 0.0 0.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 15 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 1 0 0.0 0.0 0.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 4 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 1 0 0.0 0.0 0.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 14 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 1 0 0.0 0.0 0.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 21 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 1 0 0.0 0.0 0.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 19 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 1 0 0.0 0.0 0.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 24 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 1 0.0 0.0 0.0 0.0 0.0 0.0 255 165 0 0
+0 0 -1 -1 14 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 1 0.0 0.0 0.0 0.0 0.0 0.0 255 165 0 0
+0 0 -1 -1 4 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 1 0.0 0.0 0.0 0.0 0.0 0.0 255 165 0 0
+0 0 -1 -1 21 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 1 0.0 0.0 0.0 0.0 0.0 0.0 255 165 0 0
+0 0 -1 -1 19 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 1 0.0 0.0 0.0 0.0 0.0 0.0 255 165 0 0
+0 0 -1 -1 21 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 1 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 -1 -1 19 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 1 0 0.0 0.0 0.0 0.0 0.0 0.0 0 0 0 255
+255 255 -1 -1 0 1 #"\0"
+0 -1 1 #"\0"
+0.0 8 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 1.0 1.0 1.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 2 1 #"\0"
+0 -1 1 #"\0"
+0.0 8 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 1.0 1.0 1.0 1.0 1.0 1.0 0 0 0 0 0 0
+-1 -1 2 1 #"\0"
+0 -1 1 #"\0"
+1.0 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 0.0 0.0 0.0 1.0 1.0 1.0 200 0 0 0 0
+0 -1 -1           0 1263 0 28 3 10 #"#lang eopl"
+0 0 24 29 1 #"\n"
+0 0 17 3 16 #";;;;;;;;;;;;;;;;"
+0 0 17 3 43 #" grammatical specification ;;;;;;;;;;;;;;;;"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 6 #"define"
+0 0 24 3 1 #" "
+0 0 14 3 16 #"the-lexical-spec"
+0 0 24 29 1 #"\n"
+0 0 24 3 2 #"  "
+0 0 21 3 1 #"'"
+0 0 24 3 2 #"(("
+0 0 14 3 10 #"whitespace"
+0 0 24 3 2 #" ("
+0 0 14 3 10 #"whitespace"
+0 0 24 3 2 #") "
+0 0 14 3 4 #"skip"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 7 #"comment"
+0 0 24 3 2 #" ("
+0 0 19 3 3 #"\"%\""
+0 0 24 3 2 #" ("
+0 0 14 3 5 #"arbno"
+0 0 24 3 2 #" ("
+0 0 14 3 3 #"not"
+0 0 24 3 1 #" "
+0 0 21 3 9 #"#\\newline"
+0 0 24 3 4 #"))) "
+0 0 14 3 4 #"skip"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 10 #"identifier"
+0 0 24 29 1 #"\n"
+0 0 24 3 6 #"     ("
+0 0 14 3 6 #"letter"
+0 0 24 3 2 #" ("
+0 0 14 3 5 #"arbno"
+0 0 24 3 2 #" ("
+0 0 14 3 2 #"or"
+0 0 24 3 1 #" "
+0 0 14 3 6 #"letter"
+0 0 24 3 1 #" "
+0 0 14 3 5 #"digit"
+0 0 24 3 1 #" "
+0 0 19 3 3 #"\"_\""
+0 0 24 3 1 #" "
+0 0 19 3 3 #"\"-\""
+0 0 24 3 1 #" "
+0 0 19 3 3 #"\"?\""
+0 0 24 3 4 #"))) "
+0 0 14 3 6 #"symbol"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 6 #"number"
+0 0 24 3 2 #" ("
+0 0 14 3 5 #"digit"
+0 0 24 3 2 #" ("
+0 0 14 3 5 #"arbno"
+0 0 24 3 1 #" "
+0 0 14 3 5 #"digit"
+0 0 24 3 3 #")) "
+0 0 14 3 6 #"number"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 6 #"number"
+0 0 24 3 2 #" ("
+0 0 19 3 3 #"\"-\""
+0 0 24 3 1 #" "
+0 0 14 3 5 #"digit"
+0 0 24 3 2 #" ("
+0 0 14 3 5 #"arbno"
+0 0 24 3 1 #" "
+0 0 14 3 5 #"digit"
+0 0 24 3 3 #")) "
+0 0 14 3 6 #"number"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 6 #"    ))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 6 #"define"
+0 0 24 3 1 #" "
+0 0 14 3 11 #"the-grammar"
+0 0 24 29 1 #"\n"
+0 0 24 3 2 #"  "
+0 0 21 3 1 #"'"
+0 0 24 3 2 #"(("
+0 0 14 3 7 #"program"
+0 0 24 3 2 #" ("
+0 0 14 3 10 #"expression"
+0 0 24 3 2 #") "
+0 0 14 3 9 #"a-program"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 10 #"expression"
+0 0 24 3 2 #" ("
+0 0 14 3 6 #"number"
+0 0 24 3 2 #") "
+0 0 14 3 9 #"const-exp"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 10 #"expression"
+0 0 24 3 1 #"("
+0 0 19 3 3 #"\"-\""
+0 0 24 3 1 #" "
+0 0 19 3 3 #"\"(\""
+0 0 24 3 1 #" "
+0 0 14 3 10 #"expression"
+0 0 24 3 1 #" "
+0 0 19 3 3 #"\",\""
+0 0 24 3 1 #" "
+0 0 14 3 10 #"expression"
+0 0 24 3 1 #" "
+0 0 19 3 3 #"\")\""
+0 0 24 3 1 #")"
+0 0 14 3 8 #"diff-exp"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 10 #"expression"
+0 0 24 3 2 #" ("
+0 0 19 3 7 #"\"zero?\""
+0 0 24 3 1 #" "
+0 0 19 3 3 #"\"(\""
+0 0 24 3 1 #" "
+0 0 14 3 10 #"expression"
+0 0 24 3 1 #" "
+0 0 19 3 3 #"\")\""
+0 0 24 3 2 #") "
+0 0 14 3 9 #"zero?-exp"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 10 #"expression"
+0 0 24 29 1 #"\n"
+0 0 24 3 6 #"     ("
+0 0 19 3 4 #"\"if\""
+0 0 24 3 1 #" "
+0 0 14 3 10 #"expression"
+0 0 24 3 1 #" "
+0 0 19 3 6 #"\"then\""
+0 0 24 3 1 #" "
+0 0 14 3 10 #"expression"
+0 0 24 3 1 #" "
+0 0 19 3 6 #"\"else\""
+0 0 24 3 1 #" "
+0 0 14 3 10 #"expression"
+0 0 24 3 2 #") "
+0 0 14 3 6 #"if-exp"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 10 #"expression"
+0 0 24 3 2 #" ("
+0 0 14 3 10 #"identifier"
+0 0 24 3 2 #") "
+0 0 14 3 7 #"var-exp"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 10 #"expression"
+0 0 24 3 1 #" "
+0 0 24 29 1 #"\n"
+0 0 24 3 6 #"     ("
+0 0 19 3 5 #"\"let\""
+0 0 24 3 1 #" "
+0 0 14 3 10 #"identifier"
+0 0 24 3 1 #" "
+0 0 19 3 3 #"\"=\""
+0 0 24 3 1 #" "
+0 0 14 3 10 #"expression"
+0 0 24 3 1 #" "
+0 0 19 3 4 #"\"in\""
+0 0 24 3 1 #" "
+0 0 14 3 10 #"expression"
+0 0 24 3 2 #") "
+0 0 14 3 7 #"let-exp"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 10 #"expression"
+0 0 24 29 1 #"\n"
+0 0 24 3 6 #"     ("
+0 0 19 3 8 #"\"letrec\""
+0 0 24 3 1 #" "
+0 0 14 3 10 #"identifier"
+0 0 24 3 1 #" "
+0 0 19 3 3 #"\"(\""
+0 0 24 3 1 #" "
+0 0 14 3 10 #"identifier"
+0 0 24 3 1 #" "
+0 0 19 3 3 #"\")\""
+0 0 24 3 1 #" "
+0 0 19 3 3 #"\"=\""
+0 0 24 3 1 #" "
+0 0 14 3 10 #"expression"
+0 0 24 3 1 #" "
+0 0 24 29 1 #"\n"
+0 0 24 3 15 #"               "
+0 0 19 3 4 #"\"in\""
+0 0 24 3 1 #" "
+0 0 14 3 10 #"expression"
+0 0 24 3 2 #") "
+0 0 14 3 10 #"letrec-exp"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 10 #"expression"
+0 0 24 3 2 #" ("
+0 0 19 3 6 #"\"proc\""
+0 0 24 3 1 #" "
+0 0 19 3 3 #"\"(\""
+0 0 24 3 1 #" "
+0 0 14 3 10 #"identifier"
+0 0 24 3 1 #" "
+0 0 19 3 3 #"\")\""
+0 0 24 3 1 #" "
+0 0 14 3 10 #"expression"
+0 0 24 3 2 #") "
+0 0 14 3 8 #"proc-exp"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 10 #"expression"
+0 0 24 3 2 #" ("
+0 0 19 3 3 #"\"(\""
+0 0 24 3 1 #" "
+0 0 14 3 10 #"expression"
+0 0 24 3 1 #" "
+0 0 14 3 10 #"expression"
+0 0 24 3 1 #" "
+0 0 19 3 3 #"\")\""
+0 0 24 3 2 #") "
+0 0 14 3 8 #"call-exp"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 6 #"    ))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 52 #";;;;;;;;;;;;;;;; sllgen boilerplate ;;;;;;;;;;;;;;;;"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 14 3 28 #"sllgen:make-define-datatypes"
+0 0 24 3 1 #" "
+0 0 14 3 16 #"the-lexical-spec"
+0 0 24 3 1 #" "
+0 0 14 3 11 #"the-grammar"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 6 #"define"
+0 0 24 3 1 #" "
+0 0 14 3 18 #"show-the-datatypes"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 15 3 6 #"lambda"
+0 0 24 3 5 #" () ("
+0 0 14 3 28 #"sllgen:list-define-datatypes"
+0 0 24 3 1 #" "
+0 0 14 3 16 #"the-lexical-spec"
+0 0 24 3 1 #" "
+0 0 14 3 11 #"the-grammar"
+0 0 24 3 3 #")))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 6 #"define"
+0 0 24 3 1 #" "
+0 0 14 3 10 #"scan&parse"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 14 3 25 #"sllgen:make-string-parser"
+0 0 24 3 1 #" "
+0 0 14 3 16 #"the-lexical-spec"
+0 0 24 3 1 #" "
+0 0 14 3 11 #"the-grammar"
+0 0 24 3 2 #"))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 6 #"define"
+0 0 24 3 1 #" "
+0 0 14 3 9 #"just-scan"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 14 3 26 #"sllgen:make-string-scanner"
+0 0 24 3 1 #" "
+0 0 14 3 16 #"the-lexical-spec"
+0 0 24 3 1 #" "
+0 0 14 3 11 #"the-grammar"
+0 0 24 3 2 #"))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 20 #";;;;;    ENVIRONMENT"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 15 #"define-datatype"
+0 0 24 3 1 #" "
+0 0 14 3 11 #"environment"
+0 0 24 3 1 #" "
+0 0 14 3 12 #"environment?"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 14 3 9 #"empty-env"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 14 3 10 #"extend-env"
+0 0 24 3 1 #" "
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"   ("
+0 0 14 3 4 #"bvar"
+0 0 24 3 1 #" "
+0 0 14 3 7 #"symbol?"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"   ("
+0 0 14 3 4 #"bval"
+0 0 24 3 1 #" "
+0 0 14 3 7 #"expval?"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"   ("
+0 0 14 3 9 #"saved-env"
+0 0 24 3 1 #" "
+0 0 14 3 12 #"environment?"
+0 0 24 3 2 #"))"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 14 3 14 #"extend-env-rec"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"   ("
+0 0 14 3 2 #"id"
+0 0 24 3 1 #" "
+0 0 14 3 7 #"symbol?"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"   ("
+0 0 14 3 4 #"bvar"
+0 0 24 3 1 #" "
+0 0 14 3 7 #"symbol?"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"   ("
+0 0 14 3 4 #"body"
+0 0 24 3 1 #" "
+0 0 14 3 11 #"expression?"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"   ("
+0 0 14 3 9 #"saved-env"
+0 0 24 3 1 #" "
+0 0 14 3 12 #"environment?"
+0 0 24 3 3 #")))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 6 #"define"
+0 0 24 3 2 #" ("
+0 0 14 3 9 #"apply-env"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"env"
+0 0 24 3 1 #" "
+0 0 14 3 10 #"search-sym"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 15 3 5 #"cases"
+0 0 24 3 1 #" "
+0 0 14 3 11 #"environment"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"env"
+0 0 24 29 1 #"\n"
+0 0 24 3 7 #"      ("
+0 0 14 3 9 #"empty-env"
+0 0 24 3 3 #" ()"
+0 0 24 29 1 #"\n"
+0 0 24 3 18 #"                 ("
+0 0 14 3 10 #"eopl:error"
+0 0 24 3 1 #" "
+0 0 21 3 1 #"'"
+0 0 14 3 9 #"apply-env"
+0 0 24 3 1 #" "
+0 0 19 3 19 #"\"No binding for ~s\""
+0 0 24 3 1 #" "
+0 0 14 3 10 #"search-sym"
+0 0 24 3 2 #"))"
+0 0 24 29 1 #"\n"
+0 0 24 3 7 #"      ("
+0 0 14 3 10 #"extend-env"
+0 0 24 3 2 #" ("
+0 0 14 3 3 #"var"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"val"
+0 0 24 3 1 #" "
+0 0 14 3 9 #"saved-env"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 19 #"                  ("
+0 0 14 3 2 #"if"
+0 0 24 3 2 #" ("
+0 0 14 3 4 #"eqv?"
+0 0 24 3 1 #" "
+0 0 14 3 10 #"search-sym"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"var"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 22 #"                      "
+0 0 14 3 3 #"val"
+0 0 24 29 1 #"\n"
+0 0 24 3 23 #"                      ("
+0 0 14 3 9 #"apply-env"
+0 0 24 3 1 #" "
+0 0 14 3 9 #"saved-env"
+0 0 24 3 1 #" "
+0 0 14 3 10 #"search-sym"
+0 0 24 3 3 #")))"
+0 0 24 29 1 #"\n"
+0 0 24 3 7 #"      ("
+0 0 14 3 14 #"extend-env-rec"
+0 0 24 3 2 #" ("
+0 0 14 3 6 #"p-name"
+0 0 24 3 1 #" "
+0 0 14 3 5 #"b-var"
+0 0 24 3 1 #" "
+0 0 14 3 6 #"p-body"
+0 0 24 3 1 #" "
+0 0 14 3 9 #"saved-env"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 23 #"                      ("
+0 0 14 3 2 #"if"
+0 0 24 3 2 #" ("
+0 0 14 3 4 #"eqv?"
+0 0 24 3 1 #" "
+0 0 14 3 10 #"search-sym"
+0 0 24 3 1 #" "
+0 0 14 3 6 #"p-name"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 27 #"                          ("
+0 0 14 3 8 #"proc-val"
+0 0 24 3 2 #" ("
+0 0 14 3 9 #"procedure"
+0 0 24 3 1 #" "
+0 0 14 3 5 #"b-var"
+0 0 24 3 1 #" "
+0 0 14 3 6 #"p-body"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"env"
+0 0 24 3 12 #"))          "
+0 0 24 29 1 #"\n"
+0 0 24 3 27 #"                          ("
+0 0 14 3 9 #"apply-env"
+0 0 24 3 1 #" "
+0 0 14 3 9 #"saved-env"
+0 0 24 3 1 #" "
+0 0 14 3 10 #"search-sym"
+0 0 24 3 5 #")))))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 6 #"define"
+0 0 24 3 2 #" ("
+0 0 14 3 8 #"init-env"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 14 3 10 #"extend-env"
+0 0 24 3 1 #" "
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"   "
+0 0 21 3 1 #"'"
+0 0 14 3 1 #"i"
+0 0 24 3 2 #" ("
+0 0 14 3 7 #"num-val"
+0 0 24 3 1 #" "
+0 0 21 3 1 #"1"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"   ("
+0 0 14 3 10 #"extend-env"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 21 3 1 #"'"
+0 0 14 3 1 #"v"
+0 0 24 3 2 #" ("
+0 0 14 3 7 #"num-val"
+0 0 24 3 1 #" "
+0 0 21 3 1 #"5"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 10 #"extend-env"
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"     "
+0 0 21 3 1 #"'"
+0 0 14 3 1 #"x"
+0 0 24 3 2 #" ("
+0 0 14 3 7 #"num-val"
+0 0 24 3 1 #" "
+0 0 21 3 2 #"10"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 6 #"     ("
+0 0 14 3 9 #"empty-env"
+0 0 24 3 5 #")))))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 50 #";;;;;;;;;;;;;;;; expressed values ;;;;;;;;;;;;;;;;"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 66
+#";;; an expressed value is either a number, a boolean or a procval."
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 15 #"define-datatype"
+0 0 24 3 1 #" "
+0 0 14 3 6 #"expval"
+0 0 24 3 1 #" "
+0 0 14 3 7 #"expval?"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 14 3 7 #"num-val"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"   ("
+0 0 14 3 5 #"value"
+0 0 24 3 1 #" "
+0 0 14 3 7 #"number?"
+0 0 24 3 2 #"))"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 14 3 8 #"bool-val"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"   ("
+0 0 14 3 7 #"boolean"
+0 0 24 3 1 #" "
+0 0 14 3 8 #"boolean?"
+0 0 24 3 2 #"))"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 14 3 8 #"proc-val"
+0 0 24 3 1 #" "
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"   ("
+0 0 14 3 4 #"proc"
+0 0 24 3 1 #" "
+0 0 14 3 5 #"proc?"
+0 0 24 3 3 #")))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 15 #";;; extractors:"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 30 #";; expval->num : ExpVal -> Int"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 6 #"define"
+0 0 24 3 1 #" "
+0 0 14 3 11 #"expval->num"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 15 3 6 #"lambda"
+0 0 24 3 2 #" ("
+0 0 14 3 1 #"v"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 15 3 5 #"cases"
+0 0 24 3 1 #" "
+0 0 14 3 6 #"expval"
+0 0 24 3 1 #" "
+0 0 14 3 1 #"v"
+0 0 24 29 1 #"\n"
+0 0 24 3 7 #"      ("
+0 0 14 3 7 #"num-val"
+0 0 24 3 2 #" ("
+0 0 14 3 3 #"num"
+0 0 24 3 2 #") "
+0 0 14 3 3 #"num"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 7 #"      ("
+0 0 14 3 4 #"else"
+0 0 24 3 2 #" ("
+0 0 14 3 22 #"expval-extractor-error"
+0 0 24 3 1 #" "
+0 0 21 3 1 #"'"
+0 0 14 3 3 #"num"
+0 0 24 3 1 #" "
+0 0 14 3 1 #"v"
+0 0 24 3 5 #")))))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 32 #";; expval->bool : ExpVal -> Bool"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 6 #"define"
+0 0 24 3 1 #" "
+0 0 14 3 12 #"expval->bool"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 15 3 6 #"lambda"
+0 0 24 3 2 #" ("
+0 0 14 3 1 #"v"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 15 3 5 #"cases"
+0 0 24 3 1 #" "
+0 0 14 3 6 #"expval"
+0 0 24 3 1 #" "
+0 0 14 3 1 #"v"
+0 0 24 29 1 #"\n"
+0 0 24 3 7 #"      ("
+0 0 14 3 8 #"bool-val"
+0 0 24 3 2 #" ("
+0 0 14 3 4 #"bool"
+0 0 24 3 2 #") "
+0 0 14 3 4 #"bool"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 7 #"      ("
+0 0 14 3 4 #"else"
+0 0 24 3 2 #" ("
+0 0 14 3 22 #"expval-extractor-error"
+0 0 24 3 1 #" "
+0 0 21 3 1 #"'"
+0 0 14 3 4 #"bool"
+0 0 24 3 1 #" "
+0 0 14 3 1 #"v"
+0 0 24 3 5 #")))))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 32 #";; expval->proc : ExpVal -> Proc"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 6 #"define"
+0 0 24 3 1 #" "
+0 0 14 3 12 #"expval->proc"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 15 3 6 #"lambda"
+0 0 24 3 2 #" ("
+0 0 14 3 1 #"v"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 15 3 5 #"cases"
+0 0 24 3 1 #" "
+0 0 14 3 6 #"expval"
+0 0 24 3 1 #" "
+0 0 14 3 1 #"v"
+0 0 24 29 1 #"\n"
+0 0 24 3 7 #"      ("
+0 0 14 3 8 #"proc-val"
+0 0 24 3 2 #" ("
+0 0 14 3 4 #"proc"
+0 0 24 3 2 #") "
+0 0 14 3 4 #"proc"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 7 #"      ("
+0 0 14 3 4 #"else"
+0 0 24 3 2 #" ("
+0 0 14 3 22 #"expval-extractor-error"
+0 0 24 3 1 #" "
+0 0 21 3 1 #"'"
+0 0 14 3 4 #"proc"
+0 0 24 3 1 #" "
+0 0 14 3 1 #"v"
+0 0 24 3 5 #")))))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 6 #"define"
+0 0 24 3 1 #" "
+0 0 14 3 22 #"expval-extractor-error"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 15 3 6 #"lambda"
+0 0 24 3 2 #" ("
+0 0 14 3 7 #"variant"
+0 0 24 3 1 #" "
+0 0 14 3 5 #"value"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 10 #"eopl:error"
+0 0 24 3 1 #" "
+0 0 21 3 1 #"'"
+0 0 14 3 17 #"expval-extractors"
+0 0 24 3 1 #" "
+0 0 19 3 1 #"\""
+0 0 19 3 7 #"Looking"
+0 0 19 3 1 #" "
+0 0 19 3 3 #"for"
+0 0 19 3 1 #" "
+0 0 19 3 15 #"a ~s, found ~s\""
+0 0 24 29 1 #"\n"
+0 0 24 3 16 #"                "
+0 0 14 3 7 #"variant"
+0 0 24 3 1 #" "
+0 0 14 3 5 #"value"
+0 0 24 3 3 #")))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 44 #";;;;;;;;;;;;;;;; procedures ;;;;;;;;;;;;;;;;"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 28 #";; proc? : SchemeVal -> Bool"
+0 0 24 29 1 #"\n"
+0 0 17 3 38 #";; procedure : Var * Exp * Env -> Proc"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 15 #"define-datatype"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"proc"
+0 0 24 3 1 #" "
+0 0 14 3 5 #"proc?"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 14 3 9 #"procedure"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"   ("
+0 0 14 3 3 #"var"
+0 0 24 3 1 #" "
+0 0 14 3 7 #"symbol?"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"   ("
+0 0 14 3 4 #"body"
+0 0 24 3 1 #" "
+0 0 14 3 11 #"expression?"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"   ("
+0 0 14 3 3 #"env"
+0 0 24 3 1 #" "
+0 0 14 3 12 #"environment?"
+0 0 24 3 3 #")))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 49 #";;;;;;;;;;;;;;;; the interpreter ;;;;;;;;;;;;;;;;"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 39 #";; value-of-program : Program -> ExpVal"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 6 #"define"
+0 0 24 3 2 #" ("
+0 0 14 3 16 #"value-of-program"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"pgm"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 15 3 5 #"cases"
+0 0 24 3 1 #" "
+0 0 14 3 7 #"program"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"pgm"
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 9 #"a-program"
+0 0 24 3 2 #" ("
+0 0 14 3 4 #"exp1"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 16 #"               ("
+0 0 14 3 8 #"value-of"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"exp1"
+0 0 24 3 2 #" ("
+0 0 14 3 8 #"init-env"
+0 0 24 3 5 #")))))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 33 #";; value-of : Exp * Env -> ExpVal"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 6 #"define"
+0 0 24 3 2 #" ("
+0 0 14 3 8 #"value-of"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"exp"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"env"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 15 3 5 #"cases"
+0 0 24 3 1 #" "
+0 0 14 3 10 #"expression"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"exp"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 9 #"const-exp"
+0 0 24 3 2 #" ("
+0 0 14 3 3 #"num"
+0 0 24 3 3 #") ("
+0 0 14 3 7 #"num-val"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"num"
+0 0 24 3 2 #"))"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 7 #"var-exp"
+0 0 24 3 2 #" ("
+0 0 14 3 3 #"var"
+0 0 24 3 3 #") ("
+0 0 14 3 9 #"apply-env"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"env"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"var"
+0 0 24 3 2 #"))"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 8 #"diff-exp"
+0 0 24 3 2 #" ("
+0 0 14 3 4 #"exp1"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"exp2"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 15 #"              ("
+0 0 15 3 3 #"let"
+0 0 24 3 3 #" (("
+0 0 14 3 4 #"val1"
+0 0 24 3 2 #" ("
+0 0 14 3 8 #"value-of"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"exp1"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"env"
+0 0 24 3 2 #"))"
+0 0 24 29 1 #"\n"
+0 0 24 3 21 #"                    ("
+0 0 14 3 4 #"val2"
+0 0 24 3 2 #" ("
+0 0 14 3 8 #"value-of"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"exp2"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"env"
+0 0 24 3 3 #")))"
+0 0 24 29 1 #"\n"
+0 0 24 3 17 #"                ("
+0 0 15 3 3 #"let"
+0 0 24 3 3 #" (("
+0 0 14 3 4 #"num1"
+0 0 24 3 2 #" ("
+0 0 14 3 11 #"expval->num"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"val1"
+0 0 24 3 2 #"))"
+0 0 24 29 1 #"\n"
+0 0 24 3 23 #"                      ("
+0 0 14 3 4 #"num2"
+0 0 24 3 2 #" ("
+0 0 14 3 11 #"expval->num"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"val2"
+0 0 24 3 3 #")))"
+0 0 24 29 1 #"\n"
+0 0 24 3 19 #"                  ("
+0 0 14 3 7 #"num-val"
+0 0 24 3 2 #" ("
+0 0 14 3 1 #"-"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"num1"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"num2"
+0 0 24 3 5 #")))))"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 9 #"zero?-exp"
+0 0 24 3 2 #" ("
+0 0 14 3 4 #"exp1"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 16 #"               ("
+0 0 15 3 3 #"let"
+0 0 24 3 3 #" (("
+0 0 14 3 4 #"val1"
+0 0 24 3 2 #" ("
+0 0 14 3 8 #"value-of"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"exp1"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"env"
+0 0 24 3 3 #")))"
+0 0 24 29 1 #"\n"
+0 0 24 3 18 #"                 ("
+0 0 15 3 3 #"let"
+0 0 24 3 3 #" (("
+0 0 14 3 4 #"num1"
+0 0 24 3 2 #" ("
+0 0 14 3 11 #"expval->num"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"val1"
+0 0 24 3 3 #")))"
+0 0 24 29 1 #"\n"
+0 0 24 3 20 #"                   ("
+0 0 14 3 2 #"if"
+0 0 24 3 2 #" ("
+0 0 14 3 5 #"zero?"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"num1"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 24 #"                       ("
+0 0 14 3 8 #"bool-val"
+0 0 24 3 1 #" "
+0 0 21 3 2 #"#t"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 24 #"                       ("
+0 0 14 3 8 #"bool-val"
+0 0 24 3 1 #" "
+0 0 21 3 2 #"#f"
+0 0 24 3 5 #")))))"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 6 #"if-exp"
+0 0 24 3 2 #" ("
+0 0 14 3 4 #"exp1"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"exp2"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"exp3"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 13 #"            ("
+0 0 15 3 3 #"let"
+0 0 24 3 3 #" (("
+0 0 14 3 4 #"val1"
+0 0 24 3 2 #" ("
+0 0 14 3 8 #"value-of"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"exp1"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"env"
+0 0 24 3 3 #")))"
+0 0 24 29 1 #"\n"
+0 0 24 3 15 #"              ("
+0 0 14 3 2 #"if"
+0 0 24 3 2 #" ("
+0 0 14 3 12 #"expval->bool"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"val1"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 19 #"                  ("
+0 0 14 3 8 #"value-of"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"exp2"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"env"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 19 #"                  ("
+0 0 14 3 8 #"value-of"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"exp3"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"env"
+0 0 24 3 4 #"))))"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 7 #"let-exp"
+0 0 24 3 2 #" ("
+0 0 14 3 3 #"var"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"exp1"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"body"
+0 0 24 3 8 #")       "
+0 0 24 29 1 #"\n"
+0 0 24 3 14 #"             ("
+0 0 15 3 3 #"let"
+0 0 24 3 3 #" (("
+0 0 14 3 4 #"val1"
+0 0 24 3 2 #" ("
+0 0 14 3 8 #"value-of"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"exp1"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"env"
+0 0 24 3 3 #")))"
+0 0 24 29 1 #"\n"
+0 0 24 3 16 #"               ("
+0 0 14 3 8 #"value-of"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"body"
+0 0 24 29 1 #"\n"
+0 0 24 3 26 #"                         ("
+0 0 14 3 10 #"extend-env"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"var"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"val1"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"env"
+0 0 24 3 4 #"))))"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 10 #"letrec-exp"
+0 0 24 3 2 #" ("
+0 0 14 3 6 #"p-name"
+0 0 24 3 1 #" "
+0 0 14 3 5 #"param"
+0 0 24 3 1 #" "
+0 0 14 3 6 #"p-body"
+0 0 24 3 1 #" "
+0 0 14 3 11 #"letrec-body"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 17 #"                ("
+0 0 14 3 8 #"value-of"
+0 0 24 3 1 #" "
+0 0 14 3 11 #"letrec-body"
+0 0 24 3 2 #" ("
+0 0 14 3 14 #"extend-env-rec"
+0 0 24 3 1 #" "
+0 0 14 3 6 #"p-name"
+0 0 24 29 1 #"\n"
+0 0 24 3 54 #"                                                      "
+0 0 14 3 5 #"param"
+0 0 24 29 1 #"\n"
+0 0 24 3 54 #"                                                      "
+0 0 14 3 6 #"p-body"
+0 0 24 29 1 #"\n"
+0 0 24 3 54 #"                                                      "
+0 0 14 3 3 #"env"
+0 0 24 3 3 #")))"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 8 #"proc-exp"
+0 0 24 3 2 #" ("
+0 0 14 3 3 #"var"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"body"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 15 #"              ("
+0 0 14 3 8 #"proc-val"
+0 0 24 3 2 #" ("
+0 0 14 3 9 #"procedure"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"var"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"body"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"env"
+0 0 24 3 3 #")))"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 8 #"call-exp"
+0 0 24 3 2 #" ("
+0 0 14 3 5 #"rator"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"rand"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 15 #"              ("
+0 0 15 3 3 #"let"
+0 0 24 3 3 #" (("
+0 0 14 3 4 #"proc"
+0 0 24 3 2 #" ("
+0 0 14 3 12 #"expval->proc"
+0 0 24 3 2 #" ("
+0 0 14 3 8 #"value-of"
+0 0 24 3 1 #" "
+0 0 14 3 5 #"rator"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"env"
+0 0 24 3 3 #")))"
+0 0 24 29 1 #"\n"
+0 0 24 3 21 #"                    ("
+0 0 14 3 3 #"arg"
+0 0 24 3 2 #" ("
+0 0 14 3 8 #"value-of"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"rand"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"env"
+0 0 24 3 3 #")))"
+0 0 24 29 1 #"\n"
+0 0 24 3 17 #"                ("
+0 0 14 3 15 #"apply-procedure"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"proc"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"arg"
+0 0 24 3 3 #")))"
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 4 #"    "
+0 0 24 29 1 #"\n"
+0 0 24 3 6 #"    ))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 44 #";; apply-procedure : Proc * ExpVal -> ExpVal"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 6 #"define"
+0 0 24 3 2 #" ("
+0 0 14 3 15 #"apply-procedure"
+0 0 24 3 1 #" "
+0 0 14 3 5 #"proc1"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"val"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 15 3 5 #"cases"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"proc"
+0 0 24 3 1 #" "
+0 0 14 3 5 #"proc1"
+0 0 24 29 1 #"\n"
+0 0 24 3 5 #"    ("
+0 0 14 3 9 #"procedure"
+0 0 24 3 2 #" ("
+0 0 14 3 3 #"var"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"body"
+0 0 24 3 1 #" "
+0 0 14 3 9 #"saved-env"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 16 #"               ("
+0 0 14 3 8 #"value-of"
+0 0 24 3 1 #" "
+0 0 14 3 4 #"body"
+0 0 24 3 2 #" ("
+0 0 14 3 10 #"extend-env"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"var"
+0 0 24 3 1 #" "
+0 0 14 3 3 #"val"
+0 0 24 3 1 #" "
+0 0 14 3 9 #"saved-env"
+0 0 24 3 5 #")))))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 28 #";;;;;;   EVALUATION WRAPPERS"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 29 #";; parse: String -> a-program"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 6 #"define"
+0 0 24 3 2 #" ("
+0 0 14 3 5 #"parse"
+0 0 24 3 1 #" "
+0 0 14 3 1 #"p"
+0 0 24 3 3 #") ("
+0 0 14 3 10 #"scan&parse"
+0 0 24 3 1 #" "
+0 0 14 3 1 #"p"
+0 0 24 3 2 #"))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 26 #";; eval : String -> ExpVal"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 15 3 6 #"define"
+0 0 24 3 2 #" ("
+0 0 14 3 4 #"eval"
+0 0 24 3 1 #" "
+0 0 14 3 6 #"string"
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 3 #"  ("
+0 0 14 3 16 #"value-of-program"
+0 0 24 3 2 #" ("
+0 0 14 3 5 #"parse"
+0 0 24 3 1 #" "
+0 0 14 3 6 #"string"
+0 0 24 3 3 #")))"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 28 #";;;;; EXAMPLES OF EVALUATION"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 7        1297 4           0 0           0 215 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 14 3 4 #"eval"
+0 0 24 3 1 #" "
+0 0 19 3 27 #"\"if zero?(1) then 1 else 2\""
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 14 3 4 #"eval"
+0 0 24 3 1 #" "
+0 0 19 3 9 #"\"-(x, v)\""
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 14 3 4 #"eval"
+0 0 24 3 1 #" "
+0 0 19 3 33 #"\"if zero?(-(x, x)) then x else 2\""
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 14 3 4 #"eval"
+0 0 24 3 1 #" "
+0 0 19 3 33 #"\"if zero?(-(x, v)) then x else 2\""
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 14 3 4 #"eval"
+0 0 24 3 1 #" "
+0 0 19 3 42 #"\"let decr = proc (a) -(a, 1) in (decr 30)\""
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 14 3 4 #"eval"
+0 0 24 3 1 #" "
+0 0 19 3 37 #"\"( proc (g) (g 30) proc (y) -(y, 1))\""
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 14 3 4 #"eval"
+0 0 24 3 1 #" "
+0 0 19 3 13 #"\"let x = 200 "
+0 0 19 29 1 #"\n"
+0 0 19 3 37 #"         in let f = proc (z) -(z, x) "
+0 0 19 29 1 #"\n"
+0 0 19 3 29 #"              in let x = 100 "
+0 0 19 29 1 #"\n"
+0 0 19 3 47 #"                   in let g = proc (z) -(z, x) "
+0 0 19 29 1 #"\n"
+0 0 19 3 43 #"                        in -((f 1), (g 1))\""
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 14 3 4 #"eval"
+0 0 24 3 1 #" "
+0 0 19 3 58
+#"\"let sum = proc (x) proc (y) -(x, -(0, y)) in ((sum 3) 4)\""
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 14 3 4 #"eval"
+0 0 24 3 1 #" "
+0 0 19 3 1 #"\""
+0 0 19 3 3 #"let"
+0 0 19 3 1 #" "
+0 0 19 3 1 #"x"
+0 0 19 3 1 #" "
+0 0 19 3 1 #"="
+0 0 19 3 1 #" "
+0 0 19 3 3 #"200"
+0 0 19 3 1 #" "
+0 0 19 29 1 #"\n"
+0 0 19 3 9 #"         "
+0 0 19 3 2 #"in"
+0 0 19 3 1 #" "
+0 0 19 3 3 #"let"
+0 0 19 3 1 #" "
+0 0 19 3 1 #"f"
+0 0 19 3 1 #" "
+0 0 19 3 1 #"="
+0 0 19 3 1 #" "
+0 0 19 3 4 #"proc"
+0 0 19 3 1 #" "
+0 0 19 3 1 #"("
+0 0 19 3 1 #"z"
+0 0 19 3 1 #")"
+0 0 19 3 1 #" "
+0 0 19 3 1 #"-"
+0 0 19 3 1 #"("
+0 0 19 3 1 #"z"
+0 0 19 3 1 #","
+0 0 19 3 1 #" "
+0 0 19 3 1 #"x"
+0 0 19 3 1 #")"
+0 0 19 3 1 #" "
+0 0 19 29 1 #"\n"
+0 0 19 3 14 #"              "
+0 0 19 3 2 #"in"
+0 0 19 3 1 #" "
+0 0 19 3 3 #"let"
+0 0 19 3 1 #" "
+0 0 19 3 1 #"x"
+0 0 19 3 1 #" "
+0 0 19 3 1 #"="
+0 0 19 3 1 #" "
+0 0 19 3 3 #"100"
+0 0 19 3 1 #" "
+0 0 19 29 1 #"\n"
+0 0 19 3 19 #"                   "
+0 0 19 3 2 #"in"
+0 0 19 3 1 #" "
+0 0 19 3 3 #"let"
+0 0 19 3 1 #" "
+0 0 19 3 1 #"g"
+0 0 19 3 1 #" "
+0 0 19 3 1 #"="
+0 0 19 3 1 #" "
+0 0 19 3 4 #"proc"
+0 0 19 3 1 #" "
+0 0 19 3 1 #"("
+0 0 19 3 1 #"z"
+0 0 19 3 1 #")"
+0 0 19 3 1 #" "
+0 0 19 3 1 #"-"
+0 0 19 3 1 #"("
+0 0 19 3 1 #"z"
+0 0 19 3 1 #","
+0 0 19 3 1 #" "
+0 0 19 3 1 #"x"
+0 0 19 3 1 #")"
+0 0 19 3 1 #" "
+0 0 19 29 1 #"\n"
+0 0 19 3 24 #"                        "
+0 0 19 3 2 #"in"
+0 0 19 3 1 #" "
+0 0 19 3 1 #"-"
+0 0 19 3 2 #"(("
+0 0 19 3 1 #"f"
+0 0 19 3 1 #" "
+0 0 19 3 1 #"1"
+0 0 19 3 1 #")"
+0 0 19 3 1 #","
+0 0 19 3 1 #" "
+0 0 19 3 1 #"("
+0 0 19 3 1 #"g"
+0 0 19 3 5 #" 1))\""
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 14 3 4 #"eval"
+0 0 24 3 1 #" "
+0 0 19 3 4 #"\"let"
+0 0 19 3 1 #" "
+0 0 19 3 3 #"sum"
+0 0 19 3 1 #" "
+0 0 19 3 1 #"="
+0 0 19 3 1 #" "
+0 0 19 3 4 #"proc"
+0 0 19 3 2 #" ("
+0 0 19 3 1 #"x"
+0 0 19 3 2 #") "
+0 0 19 3 4 #"proc"
+0 0 19 3 2 #" ("
+0 0 19 3 1 #"y"
+0 0 19 3 2 #") "
+0 0 19 3 1 #"-"
+0 0 19 3 1 #"("
+0 0 19 3 1 #"x"
+0 0 19 3 1 #","
+0 0 19 3 1 #" "
+0 0 19 3 1 #"-"
+0 0 19 3 1 #"("
+0 0 19 3 1 #"0"
+0 0 19 3 1 #","
+0 0 19 3 1 #" "
+0 0 19 3 1 #"y"
+0 0 19 3 2 #"))"
+0 0 19 29 1 #"\n"
+0 0 19 3 16 #"       in letrec"
+0 0 19 3 1 #" "
+0 0 19 3 5 #"sigma"
+0 0 19 3 2 #" ("
+0 0 19 3 1 #"n"
+0 0 19 3 2 #") "
+0 0 19 3 1 #"="
+0 0 19 3 1 #" "
+0 0 19 3 2 #"if"
+0 0 19 3 1 #" "
+0 0 19 3 5 #"zero?"
+0 0 19 3 1 #"("
+0 0 19 3 1 #"n"
+0 0 19 3 1 #")"
+0 0 19 29 1 #"\n"
+0 0 19 3 29 #"                             "
+0 0 19 3 4 #"then"
+0 0 19 3 1 #" "
+0 0 19 3 1 #"0"
+0 0 19 29 1 #"\n"
+0 0 19 3 59
+#"                             else ((sum n) (sigma -(n, 1)))"
+0 0 19 29 1 #"\n"
+0 0 19 3 23 #"          in (sigma 5)\""
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 17 3 13 #"; needs times"
+0 0 24 29 1 #"\n"
+0 0 24 3 1 #"("
+0 0 14 3 4 #"eval"
+0 0 24 3 1 #" "
+0 0 19 3 62
+#"\"letrec fact(n) = if zero?(n) then 1 else *(n, (fact -(n, 1)))"
+0 0 19 29 1 #"\n"
+0 0 19 3 19 #"       in (fact 5)\""
+0 0 24 3 1 #")"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0           0 0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0 0 24 29 1 #"\n"
+0           0
