@@ -1,4 +1,5 @@
 #lang eopl
+
 (require test-engine/racket-tests)
 
 ;;;;;;;;;;;;;;;; grammatical specification ;;;;;;;;;;;;;;;;
@@ -353,5 +354,12 @@
                        in let a = +(x, y) b = -(z, x) c = *(x, z)
                          in let d = *(a, b) e = -(c, 15)
                            in -(d, e)") (num-val -25))
+
+(check-expect (eval "let decr = proc (a) -(a, 1) x = 30 in (decr x)") (num-val 29))
+
+(check-expect (eval "let x = 10 y = 2 z = 1 in +(z, +(x, y))") (num-val 13))
+
+(check-expect (eval "let q = proc (f) +(f, x) p = proc (t) +(t, v) g = 20 h = 40 in (q (p +(g, h)))") (num-val 75))
+
 
 (test)
