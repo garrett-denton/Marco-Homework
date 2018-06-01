@@ -1,5 +1,4 @@
 #lang eopl
-(require test-engine/racket-tests)
 
 ;;;;;;;;;;;;;;;; grammatical specification ;;;;;;;;;;;;;;;;
 
@@ -315,43 +314,32 @@
 ;;;;; EXAMPLES OF EVALUATION
 
 
-(check-expect(eval "if zero?(1) then 1 else 2") (num-val 2))
-(check-expect(eval "-(x, v)") (num-val 5))
-(check-expect(eval "if zero?(-(x, x)) then x else 2") (num-val 10))
-(check-expect(eval "if zero?(-(x, v)) then x else 2") (num-val 2))
-(check-expect(eval "let decr = proc (a) -(a, 1) in (decr 30)") (num-val 29))
-(check-expect(eval "( proc (g) (g 30) proc (y) -(y, 1))") (num-val 29))
-(check-expect(eval "let x = 200 
-                      in let f = proc (z) -(z, x) 
-                         in let x = 100 
-                            in let g = proc (z) -(z, x) 
-                              in -((f 1), (g 1))") (num-val -100))
+(eval "if zero?(1) then 1 else 2")
+(eval "-(x, v)")
+(eval "if zero?(-(x, x)) then x else 2")
+(eval "if zero?(-(x, v)) then x else 2")
+(eval "let decr = proc (a) -(a, 1) in (decr 30)")
+(eval "( proc (g) (g 30) proc (y) -(y, 1))")
+(eval "let x = 200 
+         in let f = proc (z) -(z, x) 
+              in let x = 100 
+                   in let g = proc (z) -(z, x) 
+                        in -((f 1), (g 1))")
+(eval "let x = 200 
+         in let f = proc (z) -(z, x) 
+              in let x = 100 
+                   in let g = proc (z) -(z, x) 
+                        in -((f 1), (g 1))")
 
-(check-expect(eval "letrec fact(n) = if zero?(n) then 1 else *(n, (fact -(n, 1)))
-       in (fact 5)") (num-val 120))
+(eval "letrec fact(n) = if zero?(n) then 1 else *(n, (fact -(n, 1)))
+       in (fact 5)")
 
-(check-expect(eval "let x = 2 in *(2, 8)") (num-val 16))
+(eval "let x = 2 in *(2, 8)")
 
-(check-expect(eval "zero?(-(2, 1))") (bool-val #f))
+(eval "zero?(-(2, 1))")
 
-(check-expect(eval "if zero?(-(2, 1)) then x else 2") (num-val 2))
+(eval "if zero?(-(2, 1)) then x else 2")
 
-(check-expect(eval "letrec fact(n) = if zero?(n) then 1 else *(n, (fact -(n, 1)))
-       in (fact 5)") (num-val 120))
+(eval "letrec fact(n) = if zero?(n) then 1 else *(n, (fact -(n, 1)))
+       in (fact 5)")
 
-(check-expect (eval "let x = 1 y = 2 in -(y,x)") (num-val 1))
-
-(check-expect (eval "let x = 5 y = 10 z = 15 in +(x, -(y, z))") (num-val 0))
-
-(check-expect (eval "let x = 1 y = 2 z =3 in let a = 4 b = 5 in *(y, b)") (num-val 10))
-
-(check-expect (eval "let x = 1 y = 2 z = 3
-                       in let a = +(x, y) b = *(y, z)
-                            in +(a, b)") (num-val 9))
-
-(check-expect (eval "let x = 10 y = 12 z = 15
-                       in let a = +(x, y) b = -(z, x) c = *(x, z)
-                         in let d = *(a, b) e = -(c, 15)
-                           in -(d, e)") (num-val -25))
-
-(test)
