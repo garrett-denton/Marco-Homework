@@ -157,7 +157,8 @@
   (end-cont)
   (zero1-cont (cont continuation?))
   (let-exp-cont
-   (var symbol?)
+   (vars (list-of symbol?))
+   (exps (list-of expression?))
    (body expression?)
    (env environment?)
    (cont continuation?))
@@ -226,8 +227,8 @@
     (if-exp (exp1 exp2 exp3)
             (value-of/k exp1 env (if-test-cont exp2 exp3 env cont)))
     
-    (let-exp (var exp1 body)       
-             (value-of/k exp1 env (let-exp-cont var body env cont)))
+    (let-exp (vars exps body)       
+             (value-of/k (car exps) env (let-exp-cont vars (cdr exps) body env cont)))
     
     (letrec-exp (p-name param p-body letrec-body)
                 (value-of/k letrec-body 
@@ -258,10 +259,20 @@
                 val))
     (zero1-cont (saved-cont)
                 (apply-cont saved-cont (bool-val (zero? (expval->num val)))))
-    (let-exp-cont (var body saved-env saved-cont)
-                  (value-of/k body
-                              (extend-env var val saved-env)
-                              saved-cont))
+    
+    (let-exp-cont (vars exps body saved-env saved-cont)
+                  (if (null? exps)
+                  (value-of/k
+                   body
+                   (extend-env (car vars) val saved-env)
+                   saved-cont)
+                  
+                  (value-of/k
+                   (car exps)
+                   saved-env
+                   (let-exp-cont (cdr vars) (cdr exps) body (extend-env (car vars) val saved-env)
+                                 saved-cont))))
+                  
     (if-test-cont (exp2 exp3 saved-env saved-cont)
                   (if (expval->bool val)
                       (value-of/k exp2 saved-env saved-cont)
